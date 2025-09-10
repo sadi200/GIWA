@@ -29,6 +29,12 @@ node --import=tsx src/deposit_eth.ts
 node --import=tsx src/withdraw_eth.ts
 ```
 
+```sh
+pnpm run deposit
+pnpm run withdraw
+```
+
+
 > **Note:** Replace `0xYOUR_PRIVATE_KEY_HERE` with your actual private key. Make sure `pnpm` is installed globally.
 
 ```
