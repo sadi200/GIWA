@@ -14,6 +14,9 @@ NC='\033[0m' # No Color
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# Default Sepolia RPC (can be overridden by user)
+SEPOLIA_RPC="${SEPOLIA_RPC:-https://sepolia.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161}"
+
 # Function to display the header with logo
 show_header() {
     clear
@@ -29,7 +32,64 @@ show_header() {
     echo -e "${GREEN}                   Created by Earnpoint${NC}"
     echo -e "${BLUE}                     Logo by SADI${NC}"
     echo "=================================================="
+    echo -e "${YELLOW}Current Sepolia RPC: $SEPOLIA_RPC${NC}"
+    echo "=================================================="
     echo
+}
+
+# Function to configure Sepolia RPC manually
+configure_sepolia_rpc() {
+    show_header
+    echo -e "${YELLOW}Configure Sepolia RPC Endpoint${NC}"
+    echo
+    echo "Current RPC: $SEPOLIA_RPC"
+    echo
+    echo "You can use:"
+    echo "1. Infura (default)"
+    echo "2. Alchemy"
+    echo "3. QuickNode"
+    echo "4. Custom RPC"
+    echo "5. Keep current"
+    echo
+    read -p "Choose option [1-5]: " rpc_choice
+    
+    case $rpc_choice in
+        1)
+            read -p "Enter Infura Project ID: " infura_id
+            SEPOLIA_RPC="https://sepolia.infura.io/v3/$infura_id"
+            ;;
+        2)
+            read -p "Enter Alchemy API Key: " alchemy_key
+            SEPOLIA_RPC="https://eth-sepolia.g.alchemy.com/v2/$alchemy_key"
+            ;;
+        3)
+            read -p "Enter QuickNode URL: " quicknode_url
+            SEPOLIA_RPC="$quicknode_url"
+            ;;
+        4)
+            read -p "Enter Custom RPC URL: " custom_rpc
+            SEPOLIA_RPC="$custom_rpc"
+            ;;
+        5)
+            echo -e "${GREEN}Keeping current RPC: $SEPOLIA_RPC${NC}"
+            ;;
+        *)
+            echo -e "${RED}Invalid option. Keeping current RPC.${NC}"
+            ;;
+    esac
+    
+    # Save to .rpc_config file
+    echo "SEPOLIA_RPC=$SEPOLIA_RPC" > .rpc_config
+    echo -e "${GREEN}RPC configured successfully!${NC}"
+    echo -e "${YELLOW}New RPC: $SEPOLIA_RPC${NC}"
+    sleep 2
+}
+
+# Function to load RPC config if exists
+load_rpc_config() {
+    if [ -f .rpc_config ]; then
+        source .rpc_config
+    fi
 }
 
 # Function to check if we're in a writable directory
@@ -68,8 +128,8 @@ check_pnpm() {
 create_files() {
     echo -e "${YELLOW}Creating project structure...${NC}"
     
-    # Create config.ts with updated imports
-    cat > config.ts << 'EOF'
+    # Create config.ts with configurable RPC
+    cat > config.ts << EOF
 // config.ts
 import { defineChain, createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -82,7 +142,7 @@ if (!process.env.TEST_PRIVATE_KEY) {
   throw new Error("Set TEST_PRIVATE_KEY in .env");
 }
 
-export const PRIVATE_KEY = process.env.TEST_PRIVATE_KEY as `0x${string}`;
+export const PRIVATE_KEY = process.env.TEST_PRIVATE_KEY as \`0x\${string}\`;
 export const account = privateKeyToAccount(PRIVATE_KEY);
 
 // GIWA Sepolia chain config (values from Giwa docs)
@@ -110,17 +170,17 @@ export const giwaSepolia = defineChain({
   testnet: true,
 });
 
-// Public client L1 (Ethereum Sepolia)
+// Public client L1 (Ethereum Sepolia) with configurable RPC
 export const publicClientL1 = createPublicClient({
   chain: sepolia,
-  transport: http(),
+  transport: http("$SEPOLIA_RPC"),
 });
 
 // Wallet client L1 - for sending txns on L1
 export const walletClientL1 = createWalletClient({
   account,
   chain: sepolia,
-  transport: http(),
+  transport: http("$SEPOLIA_RPC"),
 });
 
 // Public client L2 (Giwa Sepolia)
@@ -153,7 +213,7 @@ async function main() {
     // 2) Prepare deposit transaction
     const value = parseEther("0.001");
     
-    // 3) Send deposit transaction
+    // 3) Send deposit transaction to portal contract
     const depositHash = await walletClientL1.sendTransaction({
       to: "0x956962C34687A954e611A83619ABaA37Ce6bC78A", // Portal address
       value: value,
@@ -220,7 +280,7 @@ main();
 EOF
     echo -e "${GREEN}✓ Created withdraw_eth.ts${NC}"
 
-    # Create package.json with specific viem version that supports op-stack
+    # Create package.json with specific viem version
     cat > package.json << 'EOF'
 {
   "name": "giwa-bridging-eth",
@@ -278,6 +338,7 @@ install_dependencies() {
 # Function to bridge from Sepolia to GIWA
 bridge_to_giwa() {
     echo -e "${YELLOW}Bridging from Sepolia to GIWA...${NC}"
+    echo -e "${BLUE}Using RPC: $SEPOLIA_RPC${NC}"
     echo -e "${BLUE}This might take a few minutes...${NC}"
     node --import=tsx deposit_eth.ts
     if [ $? -eq 0 ]; then
@@ -335,6 +396,49 @@ EOF
     read -p "Press any key to continue..."
 }
 
+# Function to test RPC connection
+test_rpc_connection() {
+    echo -e "${YELLOW}Testing Sepolia RPC connection...${NC}"
+    echo -e "${BLUE}RPC URL: $SEPOLIA_RPC${NC}"
+    
+    # Create a simple test script
+    cat > test_rpc.ts << EOF
+// test_rpc.ts
+import { createPublicClient, http } from "viem";
+import { sepolia } from "viem/chains";
+
+async function main() {
+  try {
+    const client = createPublicClient({
+      chain: sepolia,
+      transport: http("$SEPOLIA_RPC"),
+    });
+    
+    const blockNumber = await client.getBlockNumber();
+    console.log("Connected to Sepolia network");
+    console.log("Current block number:", blockNumber.toString());
+    
+    return true;
+  } catch (err) {
+    console.error("Failed to connect to RPC:", err.message);
+    return false;
+  }
+}
+
+main();
+EOF
+    
+    if node --import=tsx test_rpc.ts; then
+        echo -e "${GREEN}RPC connection successful!${NC}"
+    else
+        echo -e "${RED}RPC connection failed!${NC}"
+        echo -e "${YELLOW}You may want to configure a different RPC endpoint.${NC}"
+    fi
+    
+    rm -f test_rpc.ts
+    read -p "Press any key to continue..."
+}
+
 # Main menu
 main_menu() {
     while true; do
@@ -343,10 +447,12 @@ main_menu() {
         echo "1. Bridge Sepolia to GIWA"
         echo "2. Bridge GIWA to Sepolia"
         echo "3. Check Balances"
-        echo "4. Install Dependencies"
-        echo "5. Exit"
+        echo "4. Configure Sepolia RPC"
+        echo "5. Test RPC Connection"
+        echo "6. Install Dependencies"
+        echo "7. Exit"
         echo
-        read -p "Please choose an option [1-5]: " choice
+        read -p "Please choose an option [1-7]: " choice
         
         case $choice in
             1)
@@ -359,9 +465,17 @@ main_menu() {
                 check_balances
                 ;;
             4)
-                install_dependencies
+                configure_sepolia_rpc
+                # Recreate config file with new RPC
+                create_files
                 ;;
             5)
+                test_rpc_connection
+                ;;
+            6)
+                install_dependencies
+                ;;
+            7)
                 echo -e "${GREEN}Thank you for using GIWA Bridge!${NC}"
                 exit 0
                 ;;
@@ -378,6 +492,7 @@ setup() {
     show_header
     echo -e "${YELLOW}Welcome to GIWA Bridge Setup${NC}"
     echo
+    load_rpc_config
     check_writable_dir
     check_node
     check_pnpm
@@ -389,14 +504,16 @@ setup() {
 }
 
 # Start the application
+load_rpc_config
 show_header
 echo -e "${YELLOW}GIWA Bridge Script${NC}"
 echo
 echo "This script will help you:"
 echo "1. Install Node.js (if not installed)"
 echo "2. Add your private key"
-echo "3. Bridge from Sepolia to GIWA"
-echo "4. Bridge from GIWA to Sepolia"
+echo "3. Configure Sepolia RPC"
+echo "4. Bridge from Sepolia to GIWA"
+echo "5. Bridge from GIWA to Sepolia"
 echo
 read -p "Do you want to run the setup now? (y/n): " -n 1 -r
 echo
