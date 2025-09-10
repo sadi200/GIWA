@@ -11,6 +11,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
 # Function to display the header with logo
 show_header() {
     clear
@@ -69,13 +73,237 @@ check_env() {
     fi
 }
 
+# Function to check if src directory and files exist
+check_src_files() {
+    if [ ! -d "src" ]; then
+        echo -e "${YELLOW}Creating src directory...${NC}"
+        mkdir -p src
+    fi
+    
+    # Create config.ts if it doesn't exist
+    if [ ! -f "src/config.ts" ]; then
+        echo -e "${YELLOW}Creating config.ts...${NC}"
+        cat > src/config.ts << 'EOF'
+// src/config.ts
+import { defineChain, createPublicClient, createWalletClient, http } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { publicActionsL1, publicActionsL2, walletActionsL1, walletActionsL2 } from "viem/op-stack";
+import { sepolia } from "viem/chains";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+if (!process.env.TEST_PRIVATE_KEY) {
+  throw new Error("Set TEST_PRIVATE_KEY in .env");
+}
+
+export const PRIVATE_KEY = process.env.TEST_PRIVATE_KEY as `0x${string}`;
+export const account = privateKeyToAccount(PRIVATE_KEY);
+
+// GIWA Sepolia chain config (values from Giwa docs)
+export const giwaSepolia = defineChain({
+  id: 91342,
+  name: "Giwa Sepolia",
+  network: "giwa-sepolia",
+  nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: {
+    default: { http: ["https://sepolia-rpc.giwa.io"] },
+  },
+  contracts: {
+    multicall3: { address: "0xcA11bde05977b3631167028862bE2a173976CA11" },
+    l2OutputOracle: {},
+    disputeGameFactory: {
+      [sepolia.id]: { address: "0x37347caB2afaa49B776372279143D71ad1f354F6" },
+    },
+    portal: {
+      [sepolia.id]: { address: "0x956962C34687A954e611A83619ABaA37Ce6bC78A" },
+    },
+    l1StandardBridge: {
+      [sepolia.id]: { address: "0x77b2ffc0F57598cAe1DB76cb398059cF5d10A7E7" },
+    },
+  },
+  testnet: true,
+});
+
+// Public client L1 (Ethereum Sepolia)
+export const publicClientL1 = createPublicClient({
+  chain: sepolia,
+  transport: http(),
+}).extend(publicActionsL1());
+
+// Wallet client L1 - for sending txns on L1
+export const walletClientL1 = createWalletClient({
+  account,
+  chain: sepolia,
+  transport: http(),
+}).extend(walletActionsL1());
+
+// Public client L2 (Giwa Sepolia)
+export const publicClientL2 = createPublicClient({
+  chain: giwaSepolia,
+  transport: http(),
+}).extend(publicActionsL2());
+
+// Wallet client L2 - for sending txns on L2
+export const walletClientL2 = createWalletClient({
+  account,
+  chain: giwaSepolia,
+  transport: http(),
+}).extend(walletActionsL2());
+EOF
+    fi
+
+    # Create deposit_eth.ts if it doesn't exist
+    if [ ! -f "src/deposit_eth.ts" ]; then
+        echo -e "${YELLOW}Creating deposit_eth.ts...${NC}"
+        cat > src/deposit_eth.ts << 'EOF'
+// src/deposit_eth.ts
+import { publicClientL1, publicClientL2, account, walletClientL1 } from "./config";
+import { formatEther, parseEther } from "viem";
+import { getL2TransactionHashes } from "viem/op-stack";
+
+async function main() {
+  // 1) Check L1 balance
+  const l1Balance = await publicClientL1.getBalance({ address: account.address });
+  console.log(`L1 Balance: ${formatEther(l1Balance)} ETH`);
+
+  // 2) Build deposit transaction (mint amount on L2)
+  // Replace "0.001" with the amount you want to deposit
+  const depositArgs = await publicClientL2.buildDepositTransaction({
+    mint: parseEther("0.001"),
+    to: account.address,
+  });
+
+  // 3) Send deposit on L1 (this sends ETH to OptimismPortal)
+  const depositHash = await walletClientL1.depositTransaction(depositArgs);
+  console.log(`Deposit transaction hash on L1: ${depositHash}`);
+
+  // 4) Wait for L1 tx to confirm
+  const depositReceipt = await publicClientL1.waitForTransactionReceipt({ hash: depositHash });
+  console.log("L1 transaction confirmed:", depositReceipt.transactionHash);
+
+  // 5) Compute corresponding L2 tx hash
+  const [l2Hash] = getL2TransactionHashes(depositReceipt);
+  console.log(`Corresponding L2 transaction hash (precomputed): ${l2Hash}`);
+
+  // 6) Wait for L2 transaction receipt
+  const l2Receipt = await publicClientL2.waitForTransactionReceipt({ hash: l2Hash });
+  console.log("L2 transaction confirmed:", l2Receipt.transactionHash);
+
+  console.log("Deposit completed successfully!");
+}
+
+main().catch((err) => {
+  console.error("Error:", err);
+  process.exit(1);
+});
+EOF
+    fi
+
+    # Create withdraw_eth.ts if it doesn't exist
+    if [ ! -f "src/withdraw_eth.ts" ]; then
+        echo -e "${YELLOW}Creating withdraw_eth.ts...${NC}"
+        cat > src/withdraw_eth.ts << 'EOF'
+// src/withdraw_eth.ts
+import { publicClientL1, publicClientL2, account, walletClientL1, walletClientL2 } from "./config";
+import { formatEther, parseEther } from "viem";
+
+async function main() {
+  // 1) Check L2 balance
+  const l2Balance = await publicClientL2.getBalance({ address: account.address });
+  console.log(`L2 Balance: ${formatEther(l2Balance)} ETH`);
+
+  // 2) Build withdrawal initiation args (value is the ETH to withdraw)
+  const withdrawalArgs = await publicClientL1.buildInitiateWithdrawal({
+    to: account.address,
+    value: parseEther("0.00005"),
+  });
+
+  // 3) Initiate withdrawal on L2 (sends to L2ToL1MessagePasser)
+  const withdrawalHash = await walletClientL2.initiateWithdrawal(withdrawalArgs);
+  console.log(`Withdrawal transaction hash on L2: ${withdrawalHash}`);
+
+  // 4) Wait for L2 confirmation
+  const withdrawalReceipt = await publicClientL2.waitForTransactionReceipt({ hash: withdrawalHash });
+  console.log("L2 transaction confirmed:", withdrawalReceipt.transactionHash);
+
+  // 5) Wait until withdrawal can be proven on L1 (can take up to ~2 hours)
+  const { output, withdrawal } = await publicClientL1.waitToProve({
+    receipt: withdrawalReceipt,
+    targetChain: walletClientL2.chain,
+  });
+
+  // 6) Build prove args and submit prove tx on L1
+  const proveArgs = await publicClientL2.buildProveWithdrawal({
+    output,
+    withdrawal,
+  });
+
+  const proveHash = await walletClientL1.proveWithdrawal(proveArgs);
+  console.log(`Prove transaction hash on L1: ${proveHash}`);
+
+  const proveReceipt = await publicClientL1.waitForTransactionReceipt({ hash: proveHash });
+  console.log("Prove transaction confirmed:", proveReceipt.transactionHash);
+
+  // 7) Wait for finalization (challenge period ~7 days on optimistic systems)
+  await publicClientL1.waitToFinalize({
+    targetChain: walletClientL2.chain,
+    withdrawalHash: withdrawal.withdrawalHash,
+  });
+
+  // 8) Finalize withdrawal on L1
+  const finalizeHash = await walletClientL1.finalizeWithdrawal({
+    targetChain: walletClientL2.chain,
+    withdrawal,
+  });
+  console.log(`Finalize transaction hash on L1: ${finalizeHash}`);
+
+  const finalizeReceipt = await publicClientL1.waitForTransactionReceipt({ hash: finalizeHash });
+  console.log("Finalize transaction confirmed:", finalizeReceipt.transactionHash);
+
+  console.log("Withdrawal completed successfully!");
+}
+
+main().catch((err) => {
+  console.error("Error:", err);
+  process.exit(1);
+});
+EOF
+    fi
+
+    # Create package.json if it doesn't exist
+    if [ ! -f "package.json" ]; then
+        echo -e "${YELLOW}Creating package.json...${NC}"
+        cat > package.json << 'EOF'
+{
+  "name": "giwa-bridging-eth",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "deposit": "node --import=tsx src/deposit_eth.ts",
+    "withdraw": "node --import=tsx src/withdraw_eth.ts"
+  },
+  "devDependencies": {
+    "tsx": "^3.12.7",
+    "@types/node": "^20.0.0"
+  },
+  "dependencies": {
+    "viem": "^1.0.0",
+    "dotenv": "^16.4.5"
+  }
+}
+EOF
+    fi
+}
+
 # Function to install dependencies
 install_dependencies() {
     echo -e "${YELLOW}Installing dependencies...${NC}"
-    pnpm add dotenv
-    pnpm add viem@latest
     pnpm install
-    pnpm add -D tsx @types/node
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to install dependencies.${NC}"
+        exit 1
+    fi
     echo -e "${GREEN}Dependencies installed successfully.${NC}"
 }
 
@@ -83,6 +311,7 @@ install_dependencies() {
 bridge_to_giwa() {
     echo -e "${YELLOW}Bridging from Sepolia to GIWA...${NC}"
     echo -e "${BLUE}This might take a few minutes...${NC}"
+    cd "$SCRIPT_DIR"
     node --import=tsx src/deposit_eth.ts
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Bridging to GIWA completed successfully!${NC}"
@@ -96,6 +325,7 @@ bridge_to_giwa() {
 bridge_to_sepolia() {
     echo -e "${YELLOW}Bridging from GIWA to Sepolia...${NC}"
     echo -e "${BLUE}This might take a few minutes...${NC}"
+    cd "$SCRIPT_DIR"
     node --import=tsx src/withdraw_eth.ts
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Bridging to Sepolia completed successfully!${NC}"
@@ -158,6 +388,7 @@ setup() {
     echo
     check_node
     check_pnpm
+    check_src_files
     check_env
     install_dependencies
     echo -e "${GREEN}Setup completed successfully!${NC}"
