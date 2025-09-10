@@ -1,0 +1,16 @@
+{
+  "name": "giwa-bridging-eth",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "deposit": "node --import=tsx src/deposit_eth.ts",
+    "withdraw": "node --import=tsx src/withdraw_eth.ts"
+  },
+  "devDependencies": {
+    "tsx": "^3.12.7",
+    "@types/node": "^20.0.0"
+  },
+  "dependencies": {
+    "viem": "^1.0.0"
+  }
+}
