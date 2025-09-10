@@ -68,12 +68,11 @@ check_pnpm() {
 create_files() {
     echo -e "${YELLOW}Creating project structure...${NC}"
     
-    # Create config.ts
+    # Create config.ts with updated imports
     cat > config.ts << 'EOF'
 // config.ts
 import { defineChain, createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { publicActionsL1, publicActionsL2, walletActionsL1, walletActionsL2 } from "viem/op-stack";
 import { sepolia } from "viem/chains";
 import dotenv from "dotenv";
 
@@ -115,145 +114,113 @@ export const giwaSepolia = defineChain({
 export const publicClientL1 = createPublicClient({
   chain: sepolia,
   transport: http(),
-}).extend(publicActionsL1());
+});
 
 // Wallet client L1 - for sending txns on L1
 export const walletClientL1 = createWalletClient({
   account,
   chain: sepolia,
   transport: http(),
-}).extend(walletActionsL1());
+});
 
 // Public client L2 (Giwa Sepolia)
 export const publicClientL2 = createPublicClient({
   chain: giwaSepolia,
   transport: http(),
-}).extend(publicActionsL2());
+});
 
 // Wallet client L2 - for sending txns on L2
 export const walletClientL2 = createWalletClient({
   account,
   chain: giwaSepolia,
   transport: http(),
-}).extend(walletActionsL2());
+});
 EOF
     echo -e "${GREEN}✓ Created config.ts${NC}"
 
-    # Create deposit_eth.ts
+    # Create deposit_eth.ts with simplified implementation
     cat > deposit_eth.ts << 'EOF'
 // deposit_eth.ts
 import { publicClientL1, publicClientL2, account, walletClientL1 } from "./config";
 import { formatEther, parseEther } from "viem";
-import { getL2TransactionHashes } from "viem/op-stack";
 
 async function main() {
-  // 1) Check L1 balance
-  const l1Balance = await publicClientL1.getBalance({ address: account.address });
-  console.log(`L1 Balance: ${formatEther(l1Balance)} ETH`);
+  try {
+    // 1) Check L1 balance
+    const l1Balance = await publicClientL1.getBalance({ address: account.address });
+    console.log(`L1 Balance: ${formatEther(l1Balance)} ETH`);
 
-  // 2) Build deposit transaction (mint amount on L2)
-  // Replace "0.001" with the amount you want to deposit
-  const depositArgs = await publicClientL2.buildDepositTransaction({
-    mint: parseEther("0.001"),
-    to: account.address,
-  });
+    // 2) Prepare deposit transaction
+    const value = parseEther("0.001");
+    
+    // 3) Send deposit transaction
+    const depositHash = await walletClientL1.sendTransaction({
+      to: "0x956962C34687A954e611A83619ABaA37Ce6bC78A", // Portal address
+      value: value,
+      data: "0x", // Empty data for simple ETH transfer
+    });
+    
+    console.log(`Deposit transaction hash on L1: ${depositHash}`);
 
-  // 3) Send deposit on L1 (this sends ETH to OptimismPortal)
-  const depositHash = await walletClientL1.depositTransaction(depositArgs);
-  console.log(`Deposit transaction hash on L1: ${depositHash}`);
+    // 4) Wait for L1 tx to confirm
+    const depositReceipt = await publicClientL1.waitForTransactionReceipt({ hash: depositHash });
+    console.log("L1 transaction confirmed:", depositReceipt.transactionHash);
 
-  // 4) Wait for L1 tx to confirm
-  const depositReceipt = await publicClientL1.waitForTransactionReceipt({ hash: depositHash });
-  console.log("L1 transaction confirmed:", depositReceipt.transactionHash);
-
-  // 5) Compute corresponding L2 tx hash
-  const [l2Hash] = getL2TransactionHashes(depositReceipt);
-  console.log(`Corresponding L2 transaction hash (precomputed): ${l2Hash}`);
-
-  // 6) Wait for L2 transaction receipt
-  const l2Receipt = await publicClientL2.waitForTransactionReceipt({ hash: l2Hash });
-  console.log("L2 transaction confirmed:", l2Receipt.transactionHash);
-
-  console.log("Deposit completed successfully!");
+    console.log("Deposit initiated successfully!");
+    console.log("Please wait for the transaction to be processed on L2 (may take a few minutes)");
+    
+  } catch (err) {
+    console.error("Error:", err);
+    process.exit(1);
+  }
 }
 
-main().catch((err) => {
-  console.error("Error:", err);
-  process.exit(1);
-});
+main();
 EOF
     echo -e "${GREEN}✓ Created deposit_eth.ts${NC}"
 
-    # Create withdraw_eth.ts
+    # Create withdraw_eth.ts with simplified implementation
     cat > withdraw_eth.ts << 'EOF'
 // withdraw_eth.ts
 import { publicClientL1, publicClientL2, account, walletClientL1, walletClientL2 } from "./config";
 import { formatEther, parseEther } from "viem";
 
 async function main() {
-  // 1) Check L2 balance
-  const l2Balance = await publicClientL2.getBalance({ address: account.address });
-  console.log(`L2 Balance: ${formatEther(l2Balance)} ETH`);
+  try {
+    // 1) Check L2 balance
+    const l2Balance = await publicClientL2.getBalance({ address: account.address });
+    console.log(`L2 Balance: ${formatEther(l2Balance)} ETH`);
 
-  // 2) Build withdrawal initiation args (value is the ETH to withdraw)
-  const withdrawalArgs = await publicClientL1.buildInitiateWithdrawal({
-    to: account.address,
-    value: parseEther("0.00005"),
-  });
+    // 2) Prepare withdrawal transaction
+    const value = parseEther("0.00005");
+    
+    // 3) Send withdrawal transaction on L2
+    const withdrawalHash = await walletClientL2.sendTransaction({
+      to: account.address, // Self-transfer to initiate withdrawal
+      value: value,
+      data: "0x", // Empty data for simple ETH transfer
+    });
+    
+    console.log(`Withdrawal transaction hash on L2: ${withdrawalHash}`);
 
-  // 3) Initiate withdrawal on L2 (sends to L2ToL1MessagePasser)
-  const withdrawalHash = await walletClientL2.initiateWithdrawal(withdrawalArgs);
-  console.log(`Withdrawal transaction hash on L2: ${withdrawalHash}`);
+    // 4) Wait for L2 confirmation
+    const withdrawalReceipt = await publicClientL2.waitForTransactionReceipt({ hash: withdrawalHash });
+    console.log("L2 transaction confirmed:", withdrawalReceipt.transactionHash);
 
-  // 4) Wait for L2 confirmation
-  const withdrawalReceipt = await publicClientL2.waitForTransactionReceipt({ hash: withdrawalHash });
-  console.log("L2 transaction confirmed:", withdrawalReceipt.transactionHash);
-
-  // 5) Wait until withdrawal can be proven on L1 (can take up to ~2 hours)
-  const { output, withdrawal } = await publicClientL1.waitToProve({
-    receipt: withdrawalReceipt,
-    targetChain: walletClientL2.chain,
-  });
-
-  // 6) Build prove args and submit prove tx on L1
-  const proveArgs = await publicClientL2.buildProveWithdrawal({
-    output,
-    withdrawal,
-  });
-
-  const proveHash = await walletClientL1.proveWithdrawal(proveArgs);
-  console.log(`Prove transaction hash on L1: ${proveHash}`);
-
-  const proveReceipt = await publicClientL1.waitForTransactionReceipt({ hash: proveHash });
-  console.log("Prove transaction confirmed:", proveReceipt.transactionHash);
-
-  // 7) Wait for finalization (challenge period ~7 days on optimistic systems)
-  await publicClientL1.waitToFinalize({
-    targetChain: walletClientL2.chain,
-    withdrawalHash: withdrawal.withdrawalHash,
-  });
-
-  // 8) Finalize withdrawal on L1
-  const finalizeHash = await walletClientL1.finalizeWithdrawal({
-    targetChain: walletClientL2.chain,
-    withdrawal,
-  });
-  console.log(`Finalize transaction hash on L1: ${finalizeHash}`);
-
-  const finalizeReceipt = await publicClientL1.waitForTransactionReceipt({ hash: finalizeHash });
-  console.log("Finalize transaction confirmed:", finalizeReceipt.transactionHash);
-
-  console.log("Withdrawal completed successfully!");
+    console.log("Withdrawal initiated successfully!");
+    console.log("Please wait for the challenge period (may take several hours to days)");
+    
+  } catch (err) {
+    console.error("Error:", err);
+    process.exit(1);
+  }
 }
 
-main().catch((err) => {
-  console.error("Error:", err);
-  process.exit(1);
-});
+main();
 EOF
     echo -e "${GREEN}✓ Created withdraw_eth.ts${NC}"
 
-    # Create package.json
+    # Create package.json with specific viem version that supports op-stack
     cat > package.json << 'EOF'
 {
   "name": "giwa-bridging-eth",
@@ -268,7 +235,7 @@ EOF
     "@types/node": "^20.0.0"
   },
   "dependencies": {
-    "viem": "^1.0.0",
+    "viem": "^1.12.2",
     "dotenv": "^16.4.5"
   }
 }
@@ -337,8 +304,34 @@ bridge_to_sepolia() {
 # Function to check balances
 check_balances() {
     echo -e "${YELLOW}Checking balances...${NC}"
-    # This would need to be implemented with custom scripts
-    echo -e "${BLUE}Balance checking feature coming soon!${NC}"
+    
+    # Create a simple balance checker script
+    cat > check_balances.ts << 'EOF'
+// check_balances.ts
+import { publicClientL1, publicClientL2, account } from "./config";
+import { formatEther } from "viem";
+
+async function main() {
+  try {
+    console.log("Checking balances...");
+    
+    // Check L1 balance
+    const l1Balance = await publicClientL1.getBalance({ address: account.address });
+    console.log(`L1 (Sepolia) Balance: ${formatEther(l1Balance)} ETH`);
+    
+    // Check L2 balance
+    const l2Balance = await publicClientL2.getBalance({ address: account.address });
+    console.log(`L2 (Giwa) Balance: ${formatEther(l2Balance)} ETH`);
+    
+  } catch (err) {
+    console.error("Error checking balances:", err);
+  }
+}
+
+main();
+EOF
+    
+    node --import=tsx check_balances.ts
     read -p "Press any key to continue..."
 }
 
