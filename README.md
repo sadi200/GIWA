@@ -1,9 +1,4 @@
-Got it! Here’s a clean version you can put directly into a **GitHub `README.md`** with proper formatting for a shell command section:
-
-````markdown
 ## Setup and Usage
-
-Clone the repository:
 
 ```sh
 git clone https://github.com/sadi200/GIWA.git
